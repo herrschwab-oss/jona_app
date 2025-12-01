@@ -42,7 +42,7 @@
 
     <!-- MAIN APPLICATION LOGIC -->
     <script type="text/babel" data-type="module">
-        import { GoogleGenAI, Type } from "@google/genai";
+        import { GoogleGenerativeAI as GoogleGenAI } from "https://esm.run/@google/generative-ai";
 
         // =========================================================================
         //  KONFIGURATION
@@ -267,10 +267,7 @@
         // --- Gemini AI Service ---
         const geminiService = {
             async getAI() {
-                if (!GOOGLE_API_KEY || GOOGLE_API_KEY.includes("AIzaSyD96Adp7IGusfWrJ4FRh17uYZESnQYfgLg")) {
-                    alert("Bitte konfiguriere deinen Google API Key im HTML-Code!");
-                    throw new Error("API Key missing");
-                }
+               
                 return new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
             },
 
@@ -846,4 +843,5 @@
         root.render(<App />);
     </script>
 </body>
+
 </html>
