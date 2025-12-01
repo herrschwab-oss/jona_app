@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latein-Check</title>
+    
+    <!-- Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .perspective-1000 { perspective: 1000px; }
+    </style>
+
+    <!-- Import Map for Google GenAI (ES Modules) -->
+    <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.run/@google/genai",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
+    "react-router-dom": "https://aistudiocdn.com/react-router-dom@^7.9.6"
+  }
+}
+</script>
+
+    <!-- React & Related Libraries (UMD) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-router-dom@6/dist/umd/react-router-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/lucide-react@0.344.0/dist/umd/lucide-react.js"></script>
+    
+    <!-- Babel for JSX compilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- MAIN APPLICATION LOGIC -->
+    <script type="text/babel" data-type="module">
+        import { GoogleGenAI, Type } from "@google/genai";
+
+        // =========================================================================
+        //  KONFIGURATION
+        // =========================================================================
+        
+        // !!! WICHTIG: FÜGE HIER DEINEN API KEY EIN !!!
+        const GOOGLE_API_KEY = "AIzaSyD96Adp7IGusfWrJ4FRh17uYZESnQYfgLg";
+
+        // =========================================================================
+        //  GLOBAL IMPORTS & ICONS
+        // =========================================================================
+        const { HashRouter, Routes, Route, NavLink, Link, Navigate, useNavigate } = ReactRouterDOM;
+        const { 
+            Home, BookOpen, Clock, Camera, Settings, BookMarked, Layers, CheckCircle, 
+            AlertCircle, Trophy, Sword, Shield, Crown, HardHat, Bird, Star, Save, 
+            RefreshCw, X, FileText, Trash2, AlertTriangle, CheckCircle2, RotateCw, 
+            Edit, Timer, Play, Zap, XCircle, Grid, GraduationCap, Gift 
+        } = lucideReact;
+
+        // =========================================================================
+        //  CONSTANTS & TYPES
+        // =========================================================================
+        const WordType = {
+            NOUN: 'NOUN',
+            VERB: 'VERB',
+            ADJECTIVE: 'ADJECTIVE',
+            OTHER: 'OTHER'
+        };
+
+        const ITEMS = [
+            { id: 'gladius', name: 'Gladius', description: 'Ein römisches Kurzschwert.', rarity: 'COMMON', icon: 'Sword' },
+            { id: 'scutum', name: 'Scutum', description: 'Der große Turmschild der Legionäre.', rarity: 'COMMON', icon: 'Shield' },
+            { id: 'galea', name: 'Galea', description: 'Ein Helm mit Busch.', rarity: 'RARE', icon: 'HardHat' },
+            { id: 'laurea', name: 'Laurea', description: 'Der Lorbeerkranz des Siegers.', rarity: 'RARE', icon: 'Crown' },
+            { id: 'aquila', name: 'Aquila', description: 'Der Legionsadler. Das höchste Heiligtum.', rarity: 'LEGENDARY', icon: 'Bird' },
+        ];
+
+        const LEVEL_TITLES = [
+            "Civis (Bürger)", "Tiro (Rekrut)", "Legionarius", "Optio", "Centurio", 
+            "Tribunus", "Legatus", "Senator", "Consul", "Imperator"
+        ];
+
+        const LOOT_ODDS = { COMMON: 0.60, RARE: 0.30, LEGENDARY: 0.10 };
+
+        const iconMap = {
+            'Sword': <Sword className="w-6 h-6" />,
+            'Shield': <Shield className="w-6 h-6" />,
+            'Crown': <Crown className="w-6 h-6" />,
+            'HardHat': <HardHat className="w-6 h-6" />,
+            'Bird': <Bird className="w-6 h-6" />,
+        };
+
+        // =========================================================================
+        //  SERVICES (DB & GEMINI)
+        // =========================================================================
+        
+        // --- IndexedDB Service ---
+        const DB_NAME = 'LateinCheckDB';
+        const DB_VERSION = 2;
+        const STORE_VOCAB = 'vocab';
+        const STORE_CHAPTERS = 'chapters';
+        const STORE_PROFILE = 'profile';
+
+        class DBService {
+            constructor() { this.db = null; }
+
+            async open() {
+                if (this.db) return this.db;
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(DB_NAME, DB_VERSION);
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains(STORE_CHAPTERS)) db.createObjectStore(STORE_CHAPTERS, { keyPath: 'id' });
+                        if (!db.objectStoreNames.contains(STORE_VOCAB)) {
+                            const vocabStore = db.createObjectStore(STORE_VOCAB, { keyPath: 'id' });
+                            vocabStore.createIndex('chapterId', 'chapterId', { unique: false });
+                        }
+                        if (!db.objectStoreNames.contains(STORE_PROFILE)) db.createObjectStore(STORE_PROFILE, { keyPath: 'id' });
+                    };
+                    request.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+                    request.onerror = (e) => reject(e.target.error);
+                });
+            }
+
+            async addChapter(name) {
+                const db = await this.open();
+                const id = crypto.randomUUID();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_CHAPTERS, 'readwrite');
+                    tx.objectStore(STORE_CHAPTERS).add({ id, name, createdAt: Date.now() });
+                    tx.oncomplete = () => resolve(id);
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+
+            async deleteChapter(chapterId) {
+                const db = await this.open();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction([STORE_CHAPTERS, STORE_VOCAB], 'readwrite');
+                    tx.objectStore(STORE_CHAPTERS).delete(chapterId);
+                    const vocabStore = tx.objectStore(STORE_VOCAB);
+                    const index = vocabStore.index('chapterId');
+                    const request = index.getAllKeys(chapterId);
+                    request.onsuccess = () => {
+                        request.result.forEach(key => vocabStore.delete(key));
+                    };
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+
+            async addVocabulary(vocabList) {
+                const db = await this.open();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_VOCAB, 'readwrite');
+                    const store = tx.objectStore(STORE_VOCAB);
+                    vocabList.forEach(v => {
+                        store.add({
+                            ...v,
+                            id: crypto.randomUUID(),
+                            phase: 1,
+                            nextReviewDate: Date.now()
+                        });
+                    });
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+
+            async getChapters() {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const req = db.transaction(STORE_CHAPTERS, 'readonly').objectStore(STORE_CHAPTERS).getAll();
+                    req.onsuccess = () => resolve(req.result);
+                });
+            }
+
+            async getAllVocab(chapterIds) {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const req = db.transaction(STORE_VOCAB, 'readonly').objectStore(STORE_VOCAB).getAll();
+                    req.onsuccess = () => {
+                        let res = req.result;
+                        if (chapterIds && chapterIds.length) res = res.filter(v => chapterIds.includes(v.chapterId));
+                        resolve(res);
+                    };
+                });
+            }
+            
+            async getDueVocab(chapterIds) {
+                const vocab = await this.getAllVocab(chapterIds);
+                return vocab.filter(v => v.nextReviewDate <= Date.now());
+            }
+
+            async updateVocabProgress(id, success) {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const store = db.transaction(STORE_VOCAB, 'readwrite').objectStore(STORE_VOCAB);
+                    store.get(id).onsuccess = (e) => {
+                        const v = e.target.result;
+                        if (!v) return resolve();
+                        if (success) {
+                            v.phase = Math.min(v.phase + 1, 6);
+                            const intervals = [1, 3, 10, 30, 90, 180];
+                            v.nextReviewDate = Date.now() + (intervals[v.phase - 1] * 86400000);
+                        } else {
+                            v.phase = 1;
+                            v.nextReviewDate = Date.now();
+                        }
+                        v.lastReviewed = Date.now();
+                        store.put(v);
+                        resolve();
+                    };
+                });
+            }
+
+            // Gamification
+            async getUserProfile() {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const req = db.transaction(STORE_PROFILE, 'readonly').objectStore(STORE_PROFILE).get('user');
+                    req.onsuccess = () => resolve(req.result || { xp: 0, level: 1, inventory: [] });
+                });
+            }
+
+            async addXP(amount) {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const store = db.transaction(STORE_PROFILE, 'readwrite').objectStore(STORE_PROFILE);
+                    store.get('user').onsuccess = (e) => {
+                        const p = e.target.result || { id: 'user', xp: 0, level: 1, inventory: [] };
+                        p.xp += amount;
+                        const thresholds = [0, 100, 300, 600, 1000, 1500, 2100, 2800, 3600, 5000];
+                        let newLevel = 1;
+                        thresholds.forEach((t, i) => { if (p.xp >= t) newLevel = i + 1; });
+                        const leveledUp = newLevel > p.level;
+                        p.level = newLevel;
+                        store.put(p);
+                        resolve({ newLevel, leveledUp });
+                    };
+                });
+            }
+
+            async unlockItem(itemId) {
+                const db = await this.open();
+                return new Promise((resolve) => {
+                    const store = db.transaction(STORE_PROFILE, 'readwrite').objectStore(STORE_PROFILE);
+                    store.get('user').onsuccess = (e) => {
+                        const p = e.target.result || { id: 'user', xp: 0, level: 1, inventory: [] };
+                        p.id = 'user';
+                        if (!p.inventory.includes(itemId)) {
+                            p.inventory.push(itemId);
+                            store.put(p);
+                            resolve(true);
+                        } else resolve(false);
+                    };
+                });
+            }
+        }
+        const dbService = new DBService();
+
+        // --- Gemini AI Service ---
+        const geminiService = {
+            async getAI() {
+                if (!GOOGLE_API_KEY || GOOGLE_API_KEY.includes("AIzaSyD96Adp7IGusfWrJ4FRh17uYZESnQYfgLg")) {
+                    alert("Bitte konfiguriere deinen Google API Key im HTML-Code!");
+                    throw new Error("API Key missing");
+                }
+                return new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
+            },
+
+            async parseBookPage(base64DataUrl) {
+                const ai = await this.getAI();
+                let mimeType = "image/jpeg";
+                let base64Data = base64DataUrl;
+                if (base64DataUrl.includes('data:')) {
+                    const matches = base64DataUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.*)$/);
+                    if (matches) { mimeType = matches[1]; base64Data = matches[2]; }
+                }
+
+                const prompt = `Analysiere dieses Dokument (Bild/PDF). Extrahiere Kapitel und Vokabeln.
+                1. Lateinisches Wort (mit Klammern falls Genitiv etc.)
+                2. Deutsche Übersetzung
+                3. Infos (Genus, Konjugation) in 'info'
+                4. Typ (NOUN, VERB, ADJECTIVE, OTHER)
+                Gib JSON zurück: { chapterName: string, vocab: [{latin, german, info, type}] }`;
+
+                const response = await ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: { parts: [{ inlineData: { mimeType, data: base64Data } }, { text: prompt }] },
+                    config: { responseMimeType: "application/json" }
+                });
+                return JSON.parse(response.text);
+            },
+
+            async generateGrammarTestBatch(words, config) {
+                const ai = await this.getAI();
+                const nouns = words.filter(w => w.type === 'NOUN').map(w => w.latin).slice(0,10);
+                const verbs = words.filter(w => w.type === 'VERB').map(w => w.latin).slice(0,10);
+                const list = [...(config.includeNouns?nouns:[]), ...(config.includeVerbs?verbs:[])].sort(()=>0.5-Math.random()).slice(0,5).join(', ');
+
+                const prompt = `Erstelle einen Grammatik-Test (Array von Fragen) für Lateinschüler.
+                Wörter: [${list}].
+                Anzahl: ${config.questionCount}
+                Zeiten: ${config.tenses.join(', ')}
+                Modi: ${config.moods.join(', ')}
+                Fälle: ${config.cases.join(', ')}
+                Typen: 'IDENTIFY' (Form bestimmen) oder 'CONSTRUCT' (Form bilden).
+                JSON: { questions: [{ type, prompt, correctAnswer, distractors: [string], explanation }] }`;
+
+                const response = await ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: prompt,
+                    config: { responseMimeType: "application/json" }
+                });
+                const data = JSON.parse(response.text);
+                return data.questions.map((q, i) => ({
+                    id: `q-${i}`, ...q, options: [...q.distractors, q.correctAnswer].sort(() => Math.random() - 0.5)
+                }));
+            }
+        };
+
+        // =========================================================================
+        //  PAGES & COMPONENTS
+        // =========================================================================
+
+        const Layout = ({ children }) => {
+            const navClass = ({ isActive }) => `flex flex-col items-center justify-center w-full h-full text-xs font-medium transition-colors ${isActive ? 'text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`;
+            return (
+                <div className="flex flex-col h-screen bg-slate-50">
+                    <header className="flex-none bg-white shadow-sm px-4 py-3 z-10">
+                        <div className="flex items-center justify-between max-w-3xl mx-auto">
+                            <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                <BookMarked className="w-6 h-6 text-indigo-600" /> Latein-Check
+                            </h1>
+                        </div>
+                    </header>
+                    <main className="flex-1 overflow-y-auto overflow-x-hidden p-4">
+                        <div className="max-w-3xl mx-auto h-full">{children}</div>
+                    </main>
+                    <nav className="flex-none bg-white border-t border-slate-200 pb-2">
+                        <div className="max-w-3xl mx-auto flex items-center justify-around h-16">
+                            <NavLink to="/" className={navClass}><Home className="w-6 h-6 mb-1" />Home</NavLink>
+                            <NavLink to="/train" className={navClass}><BookOpen className="w-6 h-6 mb-1" />Lernen</NavLink>
+                            <NavLink to="/scan" className={navClass}>
+                                <div className="bg-indigo-600 rounded-full p-3 -mt-6 shadow-lg border-4 border-slate-50">
+                                    <Camera className="w-6 h-6 text-white" />
+                                </div>
+                            </NavLink>
+                            <NavLink to="/grammar" className={navClass}><Settings className="w-6 h-6 mb-1" />Grammatik</NavLink>
+                            <NavLink to="/timetrial" className={navClass}><Clock className="w-6 h-6 mb-1" />Zeitspiel</NavLink>
+                        </div>
+                    </nav>
+                </div>
+            );
+        };
+
+        const Dashboard = () => {
+            const [stats, setStats] = React.useState({ totalVocab: 0, dueVocab: 0, chapters: 0, byPhase: [] });
+            const [profile, setProfile] = React.useState(null);
+            
+            React.useEffect(() => {
+                (async () => {
+                    const vocab = await dbService.getAllVocab();
+                    const chapters = await dbService.getChapters();
+                    const userProfile = await dbService.getUserProfile();
+                    const now = Date.now();
+                    const phases = [0,0,0,0,0,0];
+                    let due = 0;
+                    vocab.forEach(v => {
+                        if (v.phase >= 1) phases[v.phase-1]++;
+                        if (v.nextReviewDate <= now) due++;
+                    });
+                    setStats({ totalVocab: vocab.length, dueVocab: due, chapters: chapters.length, byPhase: phases });
+                    setProfile(userProfile);
+                })();
+            }, []);
+
+            if (!profile) return <div>Lade Daten...</div>;
+            const allItemsUnlocked = profile.inventory.length === ITEMS.length;
+
+            return (
+                <div className="space-y-6 pb-20">
+                    <div className={`rounded-2xl p-6 text-white shadow-lg relative overflow-hidden transition-all ${allItemsUnlocked ? 'bg-gradient-to-br from-yellow-500 to-amber-700 border-4 border-yellow-300' : 'bg-indigo-600'}`}>
+                        {allItemsUnlocked && <div className="absolute top-0 right-0 p-4 opacity-20 transform rotate-12"><Crown className="w-32 h-32 text-white" /></div>}
+                        <div className="flex justify-between items-start mb-4 relative z-10">
+                            <div>
+                                <h2 className="text-2xl font-bold mb-1">Salve!</h2>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold px-2 py-1 rounded bg-white/20">Level {profile.level}</span>
+                                    <span className="text-sm font-bold opacity-90">{allItemsUnlocked ? "PATER PATRIAE" : (LEVEL_TITLES[profile.level-1] || "Imperator")}</span>
+                                </div>
+                            </div>
+                            {allItemsUnlocked ? <Star className="w-10 h-10 text-yellow-100" /> : <Trophy className="w-10 h-10 text-yellow-300" />}
+                        </div>
+                        <p className="mb-6 relative z-10">Du hast <span className="font-bold">{stats.dueVocab}</span> Vokabeln fällig.</p>
+                        <Link to="/train" className="inline-block bg-white text-indigo-700 font-bold py-2 px-4 rounded-lg relative z-10">Jetzt starten</Link>
+                    </div>
+
+                    <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Crown className="w-5 h-5 text-yellow-500" />Aerarium</h3>
+                        <div className="grid grid-cols-5 gap-2">
+                            {ITEMS.map(item => {
+                                const isUnlocked = profile.inventory.includes(item.id);
+                                return (
+                                    <div key={item.id} className={`aspect-square rounded-xl flex items-center justify-center border-2 ${isUnlocked ? 'bg-amber-100 border-amber-300 text-amber-600' : 'bg-slate-50 border-slate-100 text-slate-300'}`}>
+                                        {iconMap[item.icon]}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                        <h3 className="font-bold text-slate-800 mb-4">Lernfortschritt</h3>
+                        <div className="space-y-3">
+                            {stats.byPhase.map((count, idx) => (
+                                <div key={idx} className="flex items-center gap-3">
+                                    <span className="w-6 text-sm text-slate-500">{idx + 1}</span>
+                                    <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                                        <div className="h-full bg-indigo-500" style={{ width: `${stats.totalVocab > 0 ? (count / stats.totalVocab) * 100 : 0}%` }}></div>
+                                    </div>
+                                    <span className="w-8 text-right text-sm font-medium">{count}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Scanner = () => {
+            const [fileData, setFileData] = React.useState(null);
+            const [fileType, setFileType] = React.useState('image');
+            const [isProcessing, setIsProcessing] = React.useState(false);
+            const [result, setResult] = React.useState(null);
+            const [error, setError] = React.useState(null);
+            const [existingSet, setExistingSet] = React.useState(new Set());
+            const fileRef = React.useRef(null);
+
+            React.useEffect(() => {
+                dbService.getAllVocab().then(v => setExistingSet(new Set(v.map(w => w.latin.toLowerCase().trim()))));
+            }, []);
+
+            const handleFile = (e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                    setFileType(file.type === 'application/pdf' ? 'pdf' : 'image');
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        setFileData(reader.result);
+                        process(reader.result);
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const process = async (data) => {
+                setIsProcessing(true); setError(null); setResult(null);
+                try {
+                    const scan = await geminiService.parseBookPage(data);
+                    setResult(scan);
+                } catch(e) { setError(e.message); }
+                finally { setIsProcessing(false); }
+            };
+
+            const save = async () => {
+                if (!result) return;
+                const chapters = await dbService.getChapters();
+                const existC = chapters.find(c => c.name.toLowerCase() === result.chapterName.toLowerCase());
+                const cId = existC ? existC.id : await dbService.addChapter(result.chapterName);
+                
+                const toSave = result.vocab.filter(v => !existingSet.has(v.latin.toLowerCase().trim())).map(v => ({
+                    chapterId: cId, latin: v.latin, german: v.german, additionalInfo: v.info, type: v.type
+                }));
+
+                if (toSave.length) {
+                    await dbService.addVocabulary(toSave);
+                    const newSet = new Set(existingSet);
+                    toSave.forEach(v => newSet.add(v.latin.toLowerCase().trim()));
+                    setExistingSet(newSet);
+                    alert(`Gespeichert! ${toSave.length} neue Vokabeln.`);
+                    setFileData(null); setResult(null);
+                } else {
+                    alert("Keine neuen Vokabeln (nur Duplikate).");
+                }
+            };
+
+            return (
+                <div className="flex flex-col h-full space-y-4">
+                    <h2 className="text-xl font-bold">Kapitel hinzufügen</h2>
+                    {!fileData ? (
+                        <div onClick={() => fileRef.current?.click()} className="flex-1 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-8 bg-slate-50 cursor-pointer hover:bg-slate-100">
+                            <Camera className="w-12 h-12 text-indigo-600 mb-4" />
+                            <p>Foto oder PDF hochladen</p>
+                            <input type="file" ref={fileRef} className="hidden" accept="image/*,application/pdf" onChange={handleFile} />
+                        </div>
+                    ) : (
+                        <div className="flex flex-col h-full overflow-hidden">
+                            <div className="h-20 flex items-center justify-between bg-slate-100 p-4 rounded-xl mb-4">
+                                <span className="font-bold">{fileType === 'pdf' ? 'PDF Dokument' : 'Bild'}</span>
+                                <button onClick={() => setFileData(null)}><X className="w-6 h-6" /></button>
+                            </div>
+                            {isProcessing && <div className="text-center p-8"><RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-600" /> Analysiere...</div>}
+                            {error && <div className="bg-red-50 p-4 text-red-700 rounded-xl">{error}</div>}
+                            {result && (
+                                <div className="flex-1 flex flex-col bg-white rounded-xl shadow overflow-hidden">
+                                    <div className="p-4 bg-indigo-50 border-b flex justify-between">
+                                        <h3 className="font-bold">{result.chapterName}</h3>
+                                        <span className="text-xs bg-indigo-200 px-2 py-1 rounded-full">{result.vocab.length} Wörter</span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                                        {result.vocab.map((v, i) => {
+                                            const isDup = existingSet.has(v.latin.toLowerCase().trim());
+                                            return (
+                                                <div key={i} className={`flex justify-between p-2 border-b ${isDup ? 'opacity-50 bg-amber-50' : ''}`}>
+                                                    <div>
+                                                        <div className="font-bold flex gap-2">{v.latin} {isDup && <span className="text-[10px] bg-amber-200 px-1 rounded">EXISTIERT</span>}</div>
+                                                        <div className="text-sm">{v.german}</div>
+                                                    </div>
+                                                    <button onClick={() => {
+                                                        const n = [...result.vocab]; n.splice(i,1);
+                                                        setResult({...result, vocab: n});
+                                                    }} className="text-red-400"><Trash2 className="w-4 h-4" /></button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <button onClick={save} className="bg-green-600 text-white p-4 font-bold flex items-center justify-center gap-2"><Save className="w-5 h-5"/> Speichern</button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const Trainer = () => {
+            const [chapters, setChapters] = React.useState([]);
+            const [selChapters, setSelChapters] = React.useState([]);
+            const [queue, setQueue] = React.useState([]);
+            const [curr, setCurr] = React.useState(null);
+            const [show, setShow] = React.useState(false);
+            const [setup, setSetup] = React.useState(true);
+            const [manage, setManage] = React.useState(false);
+            const [stats, setStats] = React.useState({c:0, w:0});
+
+            React.useEffect(() => { load(); }, []);
+            const load = () => dbService.getChapters().then(setChapters);
+            
+            const start = async () => {
+                const v = await dbService.getDueVocab(selChapters.length?selChapters:undefined);
+                const q = v.sort(() => Math.random() - 0.5);
+                setQueue(q); setCurr(q[0]); setSetup(false); setStats({c:0,w:0});
+            };
+
+            const ans = async (known) => {
+                await dbService.updateVocabProgress(curr.id, known);
+                setStats(s => ({c: s.c + (known?1:0), w: s.w + (known?0:1)}));
+                const nq = queue.slice(1);
+                setQueue(nq); setCurr(nq[0]); setShow(false);
+            };
+
+            const delChap = async (id, name) => {
+                if (confirm(`Kapitel "${name}" löschen?`)) { await dbService.deleteChapter(id); load(); }
+            };
+
+            if (setup) return (
+                <div className="space-y-4">
+                    <div className="flex justify-between"><h2 className="font-bold text-xl">Lektionen</h2><button onClick={() => setManage(!manage)}><Edit className="w-5 h-5"/></button></div>
+                    <div className="max-h-60 overflow-y-auto space-y-2">
+                        {chapters.map(c => (
+                            <div key={c.id} className="flex items-center gap-2 bg-white p-3 rounded shadow-sm">
+                                <input type="checkbox" disabled={manage} checked={selChapters.includes(c.id)} onChange={() => setSelChapters(p => p.includes(c.id)?p.filter(x=>x!==c.id):[...p,c.id])} className="w-5 h-5"/>
+                                <span className="flex-1">{c.name}</span>
+                                {manage && <button onClick={() => delChap(c.id, c.name)} className="text-red-500"><Trash2 className="w-5 h-5"/></button>}
+                            </div>
+                        ))}
+                    </div>
+                    {!manage && <button onClick={start} disabled={!chapters.length} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl">Starten</button>}
+                </div>
+            );
+
+            if (!curr) return (
+                <div className="text-center p-8">
+                    <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4"/>
+                    <h2 className="text-2xl font-bold">Fertig!</h2>
+                    <p>Richtig: {stats.c}, Falsch: {stats.w}</p>
+                    <button onClick={() => setSetup(true)} className="mt-8 bg-indigo-600 text-white px-6 py-2 rounded-lg">Zurück</button>
+                </div>
+            );
+
+            return (
+                <div className="h-full flex flex-col justify-center">
+                    <div className="w-full bg-white rounded-3xl shadow-xl border p-8 text-center relative min-h-[300px] flex flex-col justify-center">
+                        <div className="absolute top-4 right-4 text-xs font-bold text-slate-300">PHASE {curr.phase}</div>
+                        <h2 className="text-4xl font-serif font-bold mb-2">{curr.latin}</h2>
+                        {curr.additionalInfo && <p className="text-slate-400 text-sm mb-8">{curr.additionalInfo}</p>}
+                        {show ? (
+                            <div className="animate-in fade-in">
+                                <hr className="my-4"/>
+                                <h3 className="text-2xl font-bold text-indigo-600">{curr.german}</h3>
+                            </div>
+                        ) : <button onClick={() => setShow(true)} className="text-indigo-500 font-bold mt-4">Antwort zeigen</button>}
+                    </div>
+                    <div className="mt-8 h-16">
+                        {show && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <button onClick={() => ans(false)} className="bg-red-50 text-red-600 border border-red-200 rounded-xl font-bold flex justify-center items-center gap-2"><X className="w-5 h-5"/> Nicht gewusst</button>
+                                <button onClick={() => ans(true)} className="bg-green-50 text-green-600 border border-green-200 rounded-xl font-bold flex justify-center items-center gap-2"><CheckCircle className="w-5 h-5"/> Gewusst</button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const Grammar = () => {
+            const [status, setStatus] = React.useState('SETUP');
+            const [config, setConfig] = React.useState({ includeNouns: true, includeVerbs: true, tenses: ['Präsens', 'Perfekt'], moods: ['Indikativ'], cases: ['nominative'], timePerQuestion: 15, questionCount: 5 });
+            const [vocab, setVocab] = React.useState([]);
+            const [qs, setQs] = React.useState([]);
+            const [idx, setIdx] = React.useState(0);
+            const [timer, setTimer] = React.useState(0);
+            const [answers, setAnswers] = React.useState([]);
+            const [feedback, setFeedback] = React.useState(null);
+            const [reward, setReward] = React.useState(null);
+            const timerRef = React.useRef(null);
+
+            React.useEffect(() => { dbService.getAllVocab().then(setVocab); }, []);
+
+            const start = async () => {
+                setStatus('LOADING');
+                try {
+                    const questions = await geminiService.generateGrammarTestBatch(vocab, config);
+                    setQs(questions); setIdx(0); setAnswers([]); setStatus('PLAYING'); startTimer();
+                } catch(e) { alert("Fehler: " + e.message); setStatus('SETUP'); }
+            };
+
+            const startTimer = () => {
+                setTimer(config.timePerQuestion); setFeedback(null);
+                if(timerRef.current) clearInterval(timerRef.current);
+                timerRef.current = setInterval(() => {
+                    setTimer(t => { if(t<=1){ handle(null); return 0; } return t-1; });
+                }, 1000);
+            };
+
+            const handle = (ans) => {
+                clearInterval(timerRef.current);
+                const corr = ans === qs[idx].correctAnswer;
+                setFeedback({ sel: ans, corr });
+                setAnswers(p => [...p, { ok: corr, q: qs[idx] }]);
+            };
+
+            const next = () => {
+                if (idx < qs.length - 1) { setIdx(i => i+1); startTimer(); }
+                else finish();
+            };
+
+            const finish = async () => {
+                const okCount = answers.filter(a => a.ok).length;
+                let xp = okCount * 10;
+                if (okCount === qs.length) xp += 50;
+                const { leveledUp } = await dbService.addXP(xp);
+                
+                let item = null;
+                if (okCount / qs.length >= 0.8 && Math.random() < 0.5) {
+                    const rarity = Math.random() < 0.1 ? 'LEGENDARY' : (Math.random() < 0.4 ? 'RARE' : 'COMMON');
+                    const pool = ITEMS.filter(i => i.rarity === rarity);
+                    if (pool.length) {
+                        const target = pool[Math.floor(Math.random()*pool.length)];
+                        if (await dbService.unlockItem(target.id)) item = target;
+                    }
+                }
+                setReward({ xp, leveledUp, item });
+                setStatus('FINISHED');
+            };
+
+            if (status === 'SETUP') return (
+                <div className="p-4 bg-white rounded-xl shadow border">
+                    <h2 className="font-bold text-xl mb-4">Grammatik-Test Config</h2>
+                    <div className="space-y-4">
+                        <div className="flex gap-4">
+                            <label className="flex items-center gap-2"><input type="checkbox" checked={config.includeNouns} onChange={e=>setConfig({...config, includeNouns: e.target.checked})}/> Nomen</label>
+                            <label className="flex items-center gap-2"><input type="checkbox" checked={config.includeVerbs} onChange={e=>setConfig({...config, includeVerbs: e.target.checked})}/> Verben</label>
+                        </div>
+                        <div>
+                            <p className="font-bold text-xs text-slate-400">Zeit pro Frage: {config.timePerQuestion}s</p>
+                            <input type="range" min="5" max="60" value={config.timePerQuestion} onChange={e=>setConfig({...config, timePerQuestion: parseInt(e.target.value)})} className="w-full"/>
+                        </div>
+                        <button onClick={start} disabled={!vocab.length} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl">Start</button>
+                    </div>
+                </div>
+            );
+
+            if (status === 'LOADING') return <div className="text-center p-10"><RefreshCw className="animate-spin mx-auto"/> Lade Test...</div>;
+
+            if (status === 'FINISHED') return (
+                <div className="p-4 text-center">
+                    <h2 className="text-2xl font-bold mb-4">Ergebnis</h2>
+                    {reward && (
+                        <div className="bg-indigo-600 text-white p-4 rounded-xl mb-6">
+                            <div className="text-3xl font-bold">+{reward.xp} XP</div>
+                            {reward.levelUp && <div className="text-yellow-300 font-bold animate-bounce">LEVEL UP!</div>}
+                            {reward.item && <div className="mt-2 bg-white/20 p-2 rounded flex items-center gap-2 justify-center"><Gift className="text-yellow-300"/> Item gefunden: {reward.item.name}</div>}
+                        </div>
+                    )}
+                    <div className="space-y-2 text-left">
+                        {answers.map((a, i) => (
+                            <div key={i} className={`p-3 rounded border-l-4 ${a.ok ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}`}>
+                                <div className="font-bold">{a.q.prompt}</div>
+                                <div className="text-sm">{a.ok ? 'Richtig' : `Lösung: ${a.q.correctAnswer}`}</div>
+                            </div>
+                        ))}
+                    </div>
+                    <button onClick={()=>setStatus('SETUP')} className="mt-6 w-full bg-slate-800 text-white py-3 rounded-xl font-bold">Zurück</button>
+                </div>
+            );
+
+            const q = qs[idx];
+            return (
+                <div className="flex flex-col h-full">
+                    <div className="flex items-center gap-4 mb-4">
+                        <div className="flex-1 bg-slate-200 h-2 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all" style={{width: `${(idx/qs.length)*100}%`}}></div></div>
+                        <div className="font-bold flex items-center gap-1"><Timer className="w-4 h-4"/> {timer}s</div>
+                    </div>
+                    <div className="bg-white p-8 rounded-3xl shadow border mb-4 text-center">
+                        <span className="text-xs font-bold text-slate-400 uppercase">{q.type}</span>
+                        <h3 className="text-2xl font-serif font-bold">{q.prompt}</h3>
+                    </div>
+                    <div className="grid gap-2 flex-1 overflow-y-auto">
+                        {q.options.map((opt, i) => {
+                            let cls = "bg-white border hover:bg-slate-50";
+                            if (feedback) {
+                                if (opt === q.correctAnswer) cls = "bg-green-500 text-white border-green-600";
+                                else if (opt === feedback.sel) cls = "bg-red-500 text-white border-red-600 opacity-80";
+                            }
+                            return <button key={i} disabled={!!feedback} onClick={()=>handle(opt)} className={`p-4 rounded-xl font-bold transition-all ${cls}`}>{opt}</button>
+                        })}
+                    </div>
+                    {feedback && <button onClick={next} className="mt-4 w-full bg-indigo-600 text-white font-bold py-3 rounded-xl">Weiter</button>}
+                </div>
+            );
+        };
+
+        const TimeTrial = () => {
+            const [play, setPlay] = React.useState(false);
+            const [time, setTime] = React.useState(0);
+            const [score, setScore] = React.useState(0);
+            const [q, setQ] = React.useState(null);
+            const [feedback, setFeedback] = React.useState(null);
+            const [vocab, setVocab] = React.useState([]);
+            const timerRef = React.useRef(null);
+
+            React.useEffect(() => { dbService.getAllVocab().then(setVocab); }, []);
+
+            const run = () => {
+                if (vocab.length < 4) return alert("Brauche min. 4 Vokabeln.");
+                setScore(0); setTime(60); setPlay(true); next();
+                timerRef.current = setInterval(() => {
+                    setTime(t => {
+                        if (t <= 1) { clearInterval(timerRef.current); setPlay(false); return 0; }
+                        return t - 1;
+                    });
+                }, 1000);
+            };
+
+            const next = () => {
+                const t = vocab[Math.floor(Math.random()*vocab.length)];
+                const others = vocab.filter(v => v.id !== t.id).sort(()=>Math.random()-0.5).slice(0,3).map(v=>v.german);
+                const opts = [...others, t.german].sort(()=>Math.random()-0.5);
+                setQ({ t, opts }); setFeedback(null);
+            };
+
+            const guess = (opt) => {
+                if (feedback) return;
+                const ok = opt === q.t.german;
+                setFeedback({ sel: opt, ok });
+                if (ok) { setScore(s=>s+1); setTimeout(next, 300); }
+                else setTimeout(next, 1000);
+            };
+
+            if (!play && time === 0 && score > 0) return (
+                <div className="text-center p-10 animate-in zoom-in">
+                    <Trophy className="w-24 h-24 text-yellow-500 mx-auto animate-bounce"/>
+                    <h2 className="text-3xl font-bold mt-4">Zeit um!</h2>
+                    <div className="text-6xl font-black text-indigo-600 my-4">{score}</div>
+                    <button onClick={run} className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold">Nochmal</button>
+                </div>
+            );
+
+            if (play && q) return (
+                <div className="h-full flex flex-col">
+                    <div className="flex justify-between items-center mb-6">
+                        <div className="font-bold text-slate-600 flex items-center gap-2 bg-slate-100 px-3 py-1 rounded-full"><Timer className="w-4 h-4"/> {time}s</div>
+                        <div className="font-bold text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full">{score} Pts</div>
+                    </div>
+                    <div className="bg-white p-8 rounded-3xl shadow border mb-6 text-center">
+                        <h2 className="text-3xl font-serif font-bold">{q.t.latin}</h2>
+                    </div>
+                    <div className="grid gap-3 flex-1 content-start">
+                        {q.opts.map((o, i) => {
+                            let c = "bg-white border hover:bg-indigo-50";
+                            if (feedback) {
+                                if (o === q.t.german) c = "bg-green-500 text-white";
+                                else if (o === feedback.sel) c = "bg-red-500 text-white";
+                            }
+                            return <button key={i} onClick={()=>guess(o)} className={`p-4 rounded-xl font-bold ${c}`}>{o}</button>
+                        })}
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="flex flex-col items-center justify-center h-full text-center space-y-6">
+                    <div className="bg-indigo-500 p-6 rounded-3xl rotate-3 shadow-xl"><Zap className="w-12 h-12 text-white"/></div>
+                    <div><h2 className="text-3xl font-bold">Sprint</h2><p className="text-slate-500">60 Sekunden. Wie viele schaffst du?</p></div>
+                    <button onClick={run} className="w-full max-w-xs bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2"><Play className="w-5 h-5 fill-current"/> Start</button>
+                </div>
+            );
+        };
+
+        const App = () => {
+            return (
+                <HashRouter>
+                    <Layout>
+                        <Routes>
+                            <Route path="/" element={<Dashboard />} />
+                            <Route path="/scan" element={<Scanner />} />
+                            <Route path="/train" element={<Trainer />} />
+                            <Route path="/grammar" element={<Grammar />} />
+                            <Route path="/timetrial" element={<TimeTrial />} />
+                            <Route path="*" element={<Navigate to="/" replace />} />
+                        </Routes>
+                    </Layout>
+                </HashRouter>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
